@@ -63,10 +63,25 @@ class TicketClaimSystem(commands.Cog):
 
     async def _set_status_emoji(self, channel, emoji):
         base = self._strip_emoji(channel.name)
+        new_name = f"{emoji}{base}"
+
+        # Skip the API call entirely if nothing would change — this is the
+        # single biggest source of the channel-rename rate limiting.
+        if channel.name == new_name:
+            return
+
         try:
-            await channel.edit(name=f"{emoji}{base}")
+            await channel.edit(name=new_name)
         except discord.HTTPException:
+            # Covers 429s that exhaust retries, missing-permission errors,
+            # and the channel having been deleted out from under us.
             pass
+
+    def _queue_status_emoji(self, channel, emoji):
+        """Fire-and-forget the rename so a rate limit on it can't block the
+        command (Discord renames are ~2/10min per channel and can make
+        discord.py sleep for minutes on a 429)."""
+        self.bot.loop.create_task(self._set_status_emoji(channel, emoji))
 
     # ---------- locking / unlocking ----------
 
@@ -115,7 +130,12 @@ class TicketClaimSystem(commands.Cog):
         layout = discord.ui.LayoutView()
         container = discord.ui.Container(discord.ui.TextDisplay(f"## {title}\n{body}"))
         layout.add_item(container)
-        await channel.send(view=layout)
+        try:
+            await channel.send(view=layout)
+        except discord.HTTPException:
+            # Channel may have been closed/deleted while we were doing other
+            # (possibly rate-limited) work — don't let that crash the command.
+            pass
 
     # ---------- new ticket -> red ----------
 
@@ -123,7 +143,7 @@ class TicketClaimSystem(commands.Cog):
     async def on_thread_ready(self, thread, creator, category, initial_message):
         channel = thread.channel
         if channel and not channel.name.startswith((RED, GREEN, YELLOW)):
-            await self._set_status_emoji(channel, RED)
+            self._queue_status_emoji(channel, RED)
 
     # ---------- commands ----------
 
@@ -167,7 +187,7 @@ class TicketClaimSystem(commands.Cog):
         state.update(claimed_by=claimer.id, subs=[], hold=False, locked_entities=locked)
         await self._save_state(ctx.channel.id, state)
 
-        await self._set_status_emoji(ctx.channel, GREEN)
+        self._queue_status_emoji(ctx.channel, GREEN)
         await self._send_layout(
             ctx.channel,
             title="Ticket Claimed by " + claimer.display_name,
@@ -206,7 +226,7 @@ class TicketClaimSystem(commands.Cog):
         state.update(claimed_by=None, subs=[], hold=False, locked_entities=[])
         await self._save_state(ctx.channel.id, state)
 
-        await self._set_status_emoji(ctx.channel, RED)
+        self._queue_status_emoji(ctx.channel, RED)
         await self._send_layout(
             ctx.channel,
             title="Ticket Unclaimed",
@@ -282,10 +302,10 @@ class TicketClaimSystem(commands.Cog):
         await self._save_state(ctx.channel.id, state)
 
         if state["hold"]:
-            await self._set_status_emoji(ctx.channel, YELLOW)
+            self._queue_status_emoji(ctx.channel, YELLOW)
             await self._send_layout(ctx.channel, title="Ticket On Hold", body="This ticket has been put on hold.")
         else:
-            await self._set_status_emoji(ctx.channel, GREEN)
+            self._queue_status_emoji(ctx.channel, GREEN)
             await self._send_layout(ctx.channel, title="Ticket Resumed", body="This ticket is no longer on hold.")
 
     @commands.command(name="noclaim")
