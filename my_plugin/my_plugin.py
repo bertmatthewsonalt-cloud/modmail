@@ -7,7 +7,6 @@ from discord.ext import commands
 from core import checks
 from core.models import PermissionLevel
 
-
 RED = "🔴"
 GREEN = "🟢"
 
@@ -16,50 +15,52 @@ GREEN_COLOUR = discord.Colour.green()
 
 
 class TicketClaimSystem(commands.Cog):
-    """Ticket status, claiming, and snippet commands."""
+    """Simple ticket status and snippet commands."""
 
     def __init__(self, bot):
         self.bot = bot
 
-        self._status_tasks = {}
-        self._status_targets = {}
-        self._status_lock = asyncio.Lock()
+        self._rename_tasks = {}
+        self._rename_targets = {}
+        self._rename_lock = asyncio.Lock()
 
-        self._last_status_edit = 0.0
-        self._status_min_interval = 2.0
+        self._last_rename = 0.0
+        self._rename_interval = 2.0
 
     @staticmethod
-    def _strip_emoji(name):
-        for emoji in (RED, GREEN):
-            if name.startswith(emoji):
-                return name[len(emoji):]
+    def _remove_status_emoji(name):
+        if name.startswith(RED):
+            return name[len(RED) :]
+
+        if name.startswith(GREEN):
+            return name[len(GREEN) :]
 
         return name
 
-    def _queue_status_emoji(self, channel, emoji):
+    def _queue_rename(self, channel, emoji):
         channel_id = channel.id
 
-        self._status_targets[channel_id] = emoji
+        self._rename_targets[channel_id] = emoji
 
-        existing_task = self._status_tasks.get(channel_id)
+        existing_task = self._rename_tasks.get(channel_id)
 
         if existing_task is not None and not existing_task.done():
             return
 
         task = self.bot.loop.create_task(
-            self._process_status_emoji(channel)
+            self._process_rename(channel)
         )
 
-        self._status_tasks[channel_id] = task
+        self._rename_tasks[channel_id] = task
 
-    async def _process_status_emoji(self, channel):
+    async def _process_rename(self, channel):
         channel_id = channel.id
 
         try:
             await asyncio.sleep(0.25)
 
             while True:
-                emoji = self._status_targets.pop(
+                emoji = self._rename_targets.pop(
                     channel_id,
                     None,
                 )
@@ -68,68 +69,64 @@ class TicketClaimSystem(commands.Cog):
                     return
 
                 try:
-                    base = self._strip_emoji(
+                    base_name = self._remove_status_emoji(
                         channel.name
                     )
 
-                    new_name = f"{emoji}{base}"
+                    new_name = f"{emoji}{base_name}"
 
                     if channel.name == new_name:
-                        if channel_id not in self._status_targets:
-                            return
-
                         continue
 
-                    async with self._status_lock:
+                    async with self._rename_lock:
                         elapsed = (
                             time.monotonic()
-                            - self._last_status_edit
+                            - self._last_rename
                         )
 
-                        if elapsed < self._status_min_interval:
+                        if elapsed < self._rename_interval:
                             await asyncio.sleep(
-                                self._status_min_interval
-                                - elapsed
+                                self._rename_interval - elapsed
                             )
 
-                        emoji = self._status_targets.pop(
+                        emoji = self._rename_targets.pop(
                             channel_id,
                             emoji,
                         )
 
-                        base = self._strip_emoji(
+                        base_name = self._remove_status_emoji(
                             channel.name
                         )
 
-                        new_name = f"{emoji}{base}"
+                        new_name = f"{emoji}{base_name}"
 
                         if channel.name != new_name:
                             await channel.edit(
-                                name=new_name
+                                name=new_name,
+                                reason="Ticket status update",
                             )
 
-                        self._last_status_edit = (
-                            time.monotonic()
-                        )
+                        self._last_rename = time.monotonic()
 
                 except discord.NotFound:
                     return
 
                 except discord.Forbidden:
                     print(
-                        f"[TicketClaimSystem] No permission to "
-                        f"rename channel {channel_id}."
+                        "[TicketClaimSystem] "
+                        f"No permission to rename channel {channel_id}."
                     )
                     return
 
-                except discord.HTTPException as e:
+                except discord.HTTPException as error:
                     print(
-                        f"[TicketClaimSystem] Failed to rename "
-                        f"channel {channel_id}: {e!r}"
+                        "[TicketClaimSystem] "
+                        f"Failed to rename channel {channel_id}: "
+                        f"{error!r}"
                     )
                     return
 
-                if channel_id not in self._status_targets:
+                if channel_id not in self._rename_targets:
                     return
 
                 await asyncio.sleep(0.1)
@@ -138,38 +135,30 @@ class TicketClaimSystem(commands.Cog):
             raise
 
         finally:
-            current_task = self._status_tasks.get(
-                channel_id
-            )
+            current_task = self._rename_tasks.get(channel_id)
 
             if current_task is asyncio.current_task():
-                self._status_tasks.pop(
+                self._rename_tasks.pop(
                     channel_id,
                     None,
                 )
 
-    async def _send_layout(
+    async def _send_message(
         self,
         channel,
-        *,
         title,
         body,
-        colour=None,
+        colour,
     ):
-        layout = discord.ui.LayoutView()
-
-        container = discord.ui.Container(
-            discord.ui.TextDisplay(
-                f"## {title}\n{body}"
-            ),
-            accent_colour=colour,
+        embed = discord.Embed(
+            title=title,
+            description=body,
+            colour=colour,
         )
-
-        layout.add_item(container)
 
         try:
             await channel.send(
-                view=layout
+                embed=embed
             )
 
         except discord.NotFound:
@@ -178,26 +167,13 @@ class TicketClaimSystem(commands.Cog):
         except discord.Forbidden:
             return
 
-        except discord.HTTPException as e:
+        except discord.HTTPException as error:
             print(
-                f"[TicketClaimSystem] Failed to send layout "
-                f"in channel "
+                "[TicketClaimSystem] "
+                f"Failed to send message in channel "
                 f"{getattr(channel, 'id', 'unknown')}: "
-                f"{e!r}"
+                f"{error!r}"
             )
-
-    async def _send_error(self, channel):
-        await self._send_layout(
-            channel,
-            title="Something Went Wrong",
-            body=(
-                "An unexpected error occurred while handling "
-                "this ticket. Please **close this ticket** and "
-                "have the user open a new one if the issue "
-                "continues."
-            ),
-            colour=RED_COLOUR,
-        )
 
     async def cog_command_error(self, ctx, error):
         error = getattr(
@@ -210,48 +186,51 @@ class TicketClaimSystem(commands.Cog):
             error,
             commands.CheckFailure,
         ):
-            return await self._send_layout(
+            await self._send_message(
                 ctx.channel,
-                title="Permission Denied",
-                body=(
-                    "You don't have permission to use "
-                    "this command."
-                ),
-                colour=RED_COLOUR,
+                "Permission Denied",
+                "You don't have permission to use this command.",
+                RED_COLOUR,
             )
+            return
 
         if isinstance(
             error,
             commands.MissingRequiredArgument,
         ):
-            return await self._send_layout(
+            await self._send_message(
                 ctx.channel,
-                title="Missing Argument",
-                body=(
-                    f"Missing required argument: "
-                    f"{error.param.name}."
-                ),
-                colour=RED_COLOUR,
+                "Missing Argument",
+                f"Missing required argument: `{error.param.name}`.",
+                RED_COLOUR,
             )
+            return
 
         if isinstance(
             error,
             commands.BadArgument,
         ):
-            return await self._send_layout(
+            await self._send_message(
                 ctx.channel,
-                title="Invalid Argument",
-                body=str(error),
-                colour=RED_COLOUR,
+                "Invalid Argument",
+                str(error),
+                RED_COLOUR,
             )
+            return
 
         print(
-            f"[TicketClaimSystem] Unexpected error in "
-            f"{ctx.command}: {error!r}"
+            "[TicketClaimSystem] "
+            f"Unexpected command error: {error!r}"
         )
 
-        await self._send_error(
-            ctx.channel
+        await self._send_message(
+            ctx.channel,
+            "Something Went Wrong",
+            "An unexpected error occurred while handling "
+            "this ticket. Please close this ticket and "
+            "have the user open a new one if the issue "
+            "continues.",
+            RED_COLOUR,
         )
 
     @commands.Cog.listener()
@@ -266,15 +245,15 @@ class TicketClaimSystem(commands.Cog):
             channel = thread.channel
 
             if channel is not None:
-                self._queue_status_emoji(
+                self._queue_rename(
                     channel,
                     RED,
                 )
 
-        except Exception as e:
+        except Exception as error:
             print(
-                f"[TicketClaimSystem] on_thread_ready failed: "
-                f"{e!r}"
+                "[TicketClaimSystem] "
+                f"Failed to set new ticket status: {error!r}"
             )
 
     async def _get_ticket_thread(self, ctx):
@@ -286,19 +265,19 @@ class TicketClaimSystem(commands.Cog):
         except discord.NotFound:
             return None
 
-        except discord.HTTPException as e:
+        except discord.HTTPException as error:
             print(
-                f"[TicketClaimSystem] Ticket lookup failed: "
-                f"{e!r}"
+                "[TicketClaimSystem] "
+                f"Ticket lookup failed: {error!r}"
             )
             return None
 
         if thread is None:
-            await self._send_layout(
+            await self._send_message(
                 ctx.channel,
-                title="Not a Ticket",
-                body="This isn't a ticket channel.",
-                colour=RED_COLOUR,
+                "Not a Ticket",
+                "This isn't a ticket channel.",
+                RED_COLOUR,
             )
 
             return None
@@ -316,21 +295,28 @@ class TicketClaimSystem(commands.Cog):
         )
 
         if resolved_name is None:
-            await self._send_layout(
+            await self._send_message(
                 ctx.channel,
-                title="Snippet Not Found",
-                body=(
-                    f"The snippet `{snippet_name}` "
-                    f"does not exist."
-                ),
-                colour=RED_COLOUR,
+                "Snippet Not Found",
+                f"The snippet `{snippet_name}` does not exist.",
+                RED_COLOUR,
             )
 
             return False
 
-        snippet = self.bot.snippets[
+        snippet = self.bot.snippets.get(
             resolved_name
-        ]
+        )
+
+        if snippet is None:
+            await self._send_message(
+                ctx.channel,
+                "Snippet Not Found",
+                f"The snippet `{snippet_name}` does not exist.",
+                RED_COLOUR,
+            )
+
+            return False
 
         try:
             result = await thread.reply(
@@ -343,43 +329,72 @@ class TicketClaimSystem(commands.Cog):
                 and len(result) > 0
                 and result[0] is None
             ):
-                await self._send_layout(
+                await self._send_message(
                     ctx.channel,
-                    title="Snippet Failed",
-                    body=(
-                        "I couldn't send that snippet to the "
-                        "recipient. The ticket has **not** "
-                        "been closed."
-                    ),
-                    colour=RED_COLOUR,
+                    "Snippet Failed",
+                    "I couldn't send that snippet to the "
+                    "recipient. The ticket has not been closed.",
+                    RED_COLOUR,
                 )
 
                 return False
 
-        except Exception as e:
-            print(
-                f"[TicketClaimSystem] Failed to send snippet "
-                f"{resolved_name!r}: {e!r}"
+        except discord.NotFound:
+            await self._send_message(
+                ctx.channel,
+                "Snippet Failed",
+                "The ticket channel no longer exists.",
+                RED_COLOUR,
             )
 
-            await self._send_layout(
+            return False
+
+        except discord.Forbidden:
+            await self._send_message(
                 ctx.channel,
-                title="Snippet Failed",
-                body=(
-                    "I couldn't send that snippet to the "
-                    "recipient. The ticket has **not** been "
-                    "closed."
-                ),
-                colour=RED_COLOUR,
+                "Snippet Failed",
+                "I don't have permission to send the snippet.",
+                RED_COLOUR,
+            )
+
+            return False
+
+        except discord.HTTPException as error:
+            print(
+                "[TicketClaimSystem] "
+                f"Failed to send snippet "
+                f"{resolved_name!r}: {error!r}"
+            )
+
+            await self._send_message(
+                ctx.channel,
+                "Snippet Failed",
+                "I couldn't send that snippet to the "
+                "recipient. The ticket has not been closed.",
+                RED_COLOUR,
+            )
+
+            return False
+
+        except Exception as error:
+            print(
+                "[TicketClaimSystem] "
+                f"Unexpected snippet error: {error!r}"
+            )
+
+            await self._send_message(
+                ctx.channel,
+                "Snippet Failed",
+                "I couldn't send that snippet to the "
+                "recipient. The ticket has not been closed.",
+                RED_COLOUR,
             )
 
             return False
 
         return True
 
-    @commands.command(
-        name="opensnippet"
-    )
+    @commands.command(name="opensnippet")
     @checks.has_permissions(
         PermissionLevel.SUPPORTER
     )
@@ -392,9 +407,7 @@ class TicketClaimSystem(commands.Cog):
     ):
         """Send a snippet without closing the ticket."""
 
-        thread = await self._get_ticket_thread(
-            ctx
-        )
+        thread = await self._get_ticket_thread(ctx)
 
         if thread is None:
             return
@@ -405,9 +418,7 @@ class TicketClaimSystem(commands.Cog):
             snippet_name,
         )
 
-    @commands.command(
-        name="closesnippet"
-    )
+    @commands.command(name="closesnippet")
     @checks.has_permissions(
         PermissionLevel.SUPPORTER
     )
@@ -420,9 +431,7 @@ class TicketClaimSystem(commands.Cog):
     ):
         """Send a snippet and then close the ticket."""
 
-        thread = await self._get_ticket_thread(
-            ctx
-        )
+        thread = await self._get_ticket_thread(ctx)
 
         if thread is None:
             return
@@ -442,84 +451,94 @@ class TicketClaimSystem(commands.Cog):
                 silent=True,
             )
 
-        except Exception as e:
-            print(
-                f"[TicketClaimSystem] Failed to close ticket "
-                f"after snippet {snippet_name!r}: {e!r}"
-            )
+        except discord.NotFound:
+            return
 
-            await self._send_layout(
+        except discord.Forbidden:
+            await self._send_message(
                 ctx.channel,
-                title="Snippet Sent",
-                body=(
-                    "The snippet was sent successfully, but "
-                    "I couldn't close the ticket automatically."
-                ),
-                colour=GREEN_COLOUR,
+                "Snippet Sent",
+                "The snippet was sent successfully, "
+                "but I couldn't close the ticket.",
+                GREEN_COLOUR,
             )
 
-    @commands.command(
-        name="claim"
-    )
+        except discord.HTTPException as error:
+            print(
+                "[TicketClaimSystem] "
+                f"Failed to close ticket: {error!r}"
+            )
+
+            await self._send_message(
+                ctx.channel,
+                "Snippet Sent",
+                "The snippet was sent successfully, "
+                "but I couldn't close the ticket.",
+                GREEN_COLOUR,
+            )
+
+        except Exception as error:
+            print(
+                "[TicketClaimSystem] "
+                f"Unexpected close error: {error!r}"
+            )
+
+            await self._send_message(
+                ctx.channel,
+                "Snippet Sent",
+                "The snippet was sent successfully, "
+                "but I couldn't close the ticket.",
+                GREEN_COLOUR,
+            )
+
+    @commands.command(name="claim")
     @checks.has_permissions(
         PermissionLevel.SUPPORTER
     )
     @commands.guild_only()
     async def claim(self, ctx):
-        """Mark the ticket as claimed and turn it green."""
+        """Mark a ticket as claimed."""
 
-        thread = await self._get_ticket_thread(
-            ctx
-        )
+        thread = await self._get_ticket_thread(ctx)
 
         if thread is None:
             return
 
-        self._queue_status_emoji(
+        self._queue_rename(
             ctx.channel,
             GREEN,
         )
 
-        await self._send_layout(
+        await self._send_message(
             ctx.channel,
-            title="Ticket Claimed",
-            body=(
-                f"{ctx.author.mention} has claimed "
-                f"this ticket."
-            ),
-            colour=GREEN_COLOUR,
+            "Ticket Claimed",
+            f"{ctx.author.mention} has claimed this ticket.",
+            GREEN_COLOUR,
         )
 
-    @commands.command(
-        name="unclaim"
-    )
+    @commands.command(name="unclaim")
     @checks.has_permissions(
         PermissionLevel.SUPPORTER
     )
     @commands.guild_only()
     async def unclaim(self, ctx):
-        """Mark the ticket as unclaimed and turn it red."""
+        """Mark a ticket as unclaimed."""
 
-        thread = await self._get_ticket_thread(
-            ctx
-        )
+        thread = await self._get_ticket_thread(ctx)
 
         if thread is None:
             return
 
-        self._queue_status_emoji(
+        self._queue_rename(
             ctx.channel,
             RED,
         )
 
-        await self._send_layout(
+        await self._send_message(
             ctx.channel,
-            title="Ticket Unclaimed",
-            body=(
-                "This ticket is now unclaimed and "
-                "available to staff."
-            ),
-            colour=RED_COLOUR,
+            "Ticket Unclaimed",
+            "This ticket is now unclaimed and available to staff.",
+            RED_COLOUR,
         )
 
 
