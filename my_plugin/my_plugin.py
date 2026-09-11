@@ -174,10 +174,10 @@ class TicketClaimSystem(commands.Cog):
             body="The ticket is now unclaimed and can be claimed",
         )
 
-    @commands.command(name="sub")
+    @commands.command(name="subuser")
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @commands.guild_only()
-    async def sub(self, ctx, member: discord.Member):
+    async def subuser(self, ctx, member: discord.Member):
         state = await self._get_state(ctx.channel.id)
         if not state["claimed_by"]:
             return await ctx.send("This ticket isn't claimed yet.")
@@ -197,10 +197,10 @@ class TicketClaimSystem(commands.Cog):
                  f"they can now respond to the user.",
         )
 
-    @commands.command(name="unsub")
+    @commands.command(name="unsubuser")
     @checks.has_permissions(PermissionLevel.SUPPORTER)
     @commands.guild_only()
-    async def unsub(self, ctx, member: discord.Member):
+    async def unsubuser(self, ctx, member: discord.Member):
         state = await self._get_state(ctx.channel.id)
         if member.id not in state["subs"]:
             return await ctx.send(f"{member.mention} isn't subbed on this ticket.")
