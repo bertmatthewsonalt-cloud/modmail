@@ -24,7 +24,7 @@ class AIRelay(commands.Cog):
     """
 
     # Replace with your automation bot's actual Discord user (client) ID.
-    TRUSTED_BOT_ID = 1506346483191119982  # <-- SET THIS
+    TRUSTED_BOT_ID = 1434985220506914897  # <-- SET THIS
 
     def __init__(self, bot):
         self.bot = bot
